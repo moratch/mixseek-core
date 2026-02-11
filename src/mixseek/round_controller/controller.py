@@ -438,6 +438,22 @@ class RoundController:
                 )
             return True, ""
 
+        # Stage (a'): Skip LLM judgment if already at max rounds
+        if current_round >= self.task.max_rounds:
+            if self.store is not None:
+                await self.store.save_round_status(
+                    execution_id=self.task.execution_id,
+                    team_id=self.team_config.team_id,
+                    team_name=self.team_config.team_name,
+                    round_number=current_round,
+                    should_continue=False,
+                    reasoning=f"Maximum rounds reached ({current_round} >= {self.task.max_rounds})",
+                    confidence_score=1.0,
+                    round_started_at=self.round_history[-1].round_started_at.isoformat(),
+                    round_ended_at=self.round_history[-1].round_ended_at.isoformat(),
+                )
+            return False, "max_rounds_reached"
+
         # Stage (b): LLM-based judgment
         # FR-013: RoundControllerがRoundPromptContextを作成してプロンプト整形
         judgment_context = RoundPromptContext(

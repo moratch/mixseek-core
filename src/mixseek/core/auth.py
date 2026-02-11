@@ -22,6 +22,7 @@ from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.providers.google import GoogleProvider
 from pydantic_ai.providers.grok import GrokProvider
+from pydantic_ai.providers.openai import OpenAIProvider
 
 # Managed HTTP clients for cleanup
 _managed_http_clients: list[httpx.AsyncClient] = []
@@ -36,6 +37,7 @@ class AuthProvider(Enum):
     ANTHROPIC = "anthropic"
     GROK = "grok"
     GROK_RESPONSES = "grok_responses"
+    GLM = "glm"
     TEST_MODEL = "test_model"
 
 
@@ -82,6 +84,9 @@ def detect_auth_provider(model_id: str) -> AuthProvider:
     elif model_id.startswith("grok-responses:"):
         return AuthProvider.GROK_RESPONSES
 
+    elif model_id.startswith("glm:"):
+        return AuthProvider.GLM
+
     raise AuthenticationError(
         f"Unsupported model ID format: {model_id}",
         AuthProvider.GOOGLE_AI,
@@ -89,8 +94,9 @@ def detect_auth_provider(model_id: str) -> AuthProvider:
         "'google-vertex:model-name' for Vertex AI models, "
         "'openai:model-name' for OpenAI models, "
         "'anthropic:model-name' for Anthropic Claude models, "
-        "'grok:model-name' for Grok models, or "
-        "'grok-responses:model-name' for Grok with web search tools",
+        "'grok:model-name' for Grok models, "
+        "'grok-responses:model-name' for Grok with web search tools, or "
+        "'glm:model-name' for Zhipu AI GLM models",
     )
 
 
@@ -343,6 +349,37 @@ def validate_grok_credentials() -> None:
         )
 
 
+def validate_glm_credentials() -> None:
+    """Validate Zhipu AI GLM API credentials.
+
+    Raises:
+        AuthenticationError: If GLM_API_KEY is missing or invalid format
+    """
+    api_key = os.getenv("GLM_API_KEY")
+
+    if not api_key:
+        raise AuthenticationError(
+            "GLM_API_KEY environment variable not found",
+            AuthProvider.GLM,
+            "Set your Zhipu AI API key: export GLM_API_KEY=your_key_here",
+        )
+
+    if not api_key.strip():
+        raise AuthenticationError(
+            "GLM_API_KEY environment variable is empty",
+            AuthProvider.GLM,
+            "Ensure GLM_API_KEY contains a valid API key",
+        )
+
+    # Basic format validation (Zhipu AI keys contain a dot separator)
+    if "." not in api_key.strip():
+        raise AuthenticationError(
+            "GLM_API_KEY appears to be invalid (expected format: 'id.secret')",
+            AuthProvider.GLM,
+            "Verify your Zhipu AI API key format",
+        )
+
+
 def create_authenticated_model(
     model_id: str,
 ) -> GoogleModel | OpenAIChatModel | OpenAIResponsesModel | AnthropicModel | TestModel:
@@ -418,6 +455,21 @@ def create_authenticated_model(
         # Uses OpenAIResponsesModel with provider='grok'
         return OpenAIResponsesModel(base_model_name, provider="grok")
 
+    elif auth_provider == AuthProvider.GLM:
+        validate_glm_credentials()
+        # Extract base model name (remove 'glm:' prefix)
+        base_model_name = model_id.replace("glm:", "")
+        # GLM uses OpenAI-compatible API via Zhipu AI endpoint
+        # GLM Coding Plan requires the coding-specific endpoint
+        glm_api_key = os.getenv("GLM_API_KEY")
+        assert glm_api_key is not None  # Guaranteed by validate_glm_credentials()
+        glm_base_url = os.getenv("GLM_BASE_URL", "https://api.z.ai/api/coding/paas/v4")
+        glm_provider = OpenAIProvider(
+            base_url=glm_base_url,
+            api_key=glm_api_key,
+        )
+        return OpenAIChatModel(base_model_name, provider=glm_provider)
+
     else:
         # This should never be reached due to detect_auth_provider validation
         raise AuthenticationError(
@@ -488,6 +540,15 @@ def get_auth_info(model_id: str) -> dict[str, str]:
             api_key = os.getenv("GROK_API_KEY", "")
             return {
                 "provider": auth_provider.value,
+                "environment": "production",
+                "model_id": model_id,
+                "credentials_status": "present" if api_key else "missing",
+            }
+
+        elif auth_provider == AuthProvider.GLM:
+            api_key = os.getenv("GLM_API_KEY", "")
+            return {
+                "provider": "glm",
                 "environment": "production",
                 "model_id": model_id,
                 "credentials_status": "present" if api_key else "missing",
